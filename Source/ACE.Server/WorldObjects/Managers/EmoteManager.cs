@@ -543,22 +543,6 @@ namespace ACE.Server.WorldObjects.Managers
                     }
                     break;
 
-                /* sets self's PropertyFloat stat to a specific amount */
-                case EmoteType.SetMyFloatStat:
-
-                    if (WorldObject != null && emote.Stat != null)
-                    {
-                        var floatProperty = (PropertyFloat)emote.Stat;
-                        var newValue = emote.Percent ?? 1.0f; 
-                        
-                        WorldObject.SetProperty(floatProperty, newValue);
-
-                        if (WorldObject is Player selfPlayer)
-                            selfPlayer.Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyFloat(selfPlayer, floatProperty, newValue));
-                    }
-                    break;
-
-                /* inq questbonus amount */
                 /* sets self's PropertyString stat to a specific value */
                 case EmoteType.SetMyStringStat:
 
@@ -575,6 +559,75 @@ namespace ACE.Server.WorldObjects.Managers
                     break;
 
 
+
+                /* sets self's PropertyFloat stat to a specific amount */
+                case EmoteType.SetMyFloatStat:
+
+                    if (WorldObject != null && emote.Stat != null && emote.Percent.HasValue)
+                    {
+                        var floatProperty = (PropertyFloat)emote.Stat;
+                        var newValue = emote.Percent.Value;
+                        
+                        if (WorldObject is Player pUpdater)
+                        {
+                            pUpdater.UpdateProperty(pUpdater, floatProperty, newValue);
+                            pUpdater.EnqueueBroadcast(false, new GameMessagePublicUpdatePropertyFloat(pUpdater, floatProperty, Convert.ToDouble(newValue)));
+                        }
+                        else
+                        {
+                            // fallback for monsters/items executing emotes that don't have UpdateProperty available in the same way
+                            WorldObject.SetProperty(floatProperty, newValue);
+                            WorldObject.EnqueueBroadcast(false, new GameMessagePublicUpdatePropertyFloat(WorldObject, floatProperty, Convert.ToDouble(newValue)));
+                        }
+                    }
+                    break;
+
+                /* sets self's PropertyBool stat to a specific amount */
+                case EmoteType.SetMyBoolStat:
+
+                    if (WorldObject != null && emote.Stat != null)
+                    {
+                        var boolProperty = (PropertyBool)emote.Stat;
+                        var newValue = (emote.Amount ?? 0) != 0;
+                        
+                        WorldObject.SetProperty(boolProperty, newValue);
+
+                        if (WorldObject is Player selfPlayer)
+                            selfPlayer.Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyBool(selfPlayer, boolProperty, newValue));
+                    }
+                    break;
+
+                /* sets self's PropertyInt stat to a specific amount */
+                case EmoteType.SetMyIntStat:
+
+                    if (WorldObject != null && emote.Stat != null)
+                    {
+                        var intProperty = (PropertyInt)emote.Stat;
+                        var newValue = emote.Amount ?? 1; 
+                        
+                        WorldObject.SetProperty(intProperty, newValue);
+
+                        if (WorldObject is Player selfPlayer)
+                            selfPlayer.Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyInt(selfPlayer, intProperty, newValue));
+                    }
+                    break;
+
+                /* sets self's PropertyInt64 stat to a specific amount */
+                case EmoteType.SetMyInt64Stat:
+
+                    if (WorldObject != null && emote.Stat != null)
+                    {
+                        var int64Property = (PropertyInt64)emote.Stat;
+                        var newValue = emote.Amount64 ?? 1; 
+                        
+                        WorldObject.SetProperty(int64Property, newValue);
+
+                        if (WorldObject is Player selfPlayer)
+                            selfPlayer.Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyInt64(selfPlayer, int64Property, newValue));
+                    }
+                    break;
+
+                /* inq questbonus amount */
                 case EmoteType.QuestCompletionCount:
 
                     if (targetObject != null)
@@ -3830,6 +3883,7 @@ namespace ACE.Server.WorldObjects.Managers
                     Sound = (Sound?)action.Sound,
                     SpellId = action.SpellId,
                     StackSize = action.StackSize,
+                    Stat = action.Stat,
                     TestString = action.TestString,
                     TreasureClass = action.TreasureClass,
                     TryToBond = action.TryToBond,
