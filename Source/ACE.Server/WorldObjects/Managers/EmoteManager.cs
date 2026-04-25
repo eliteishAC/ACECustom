@@ -559,6 +559,22 @@ namespace ACE.Server.WorldObjects.Managers
                     break;
 
                 /* inq questbonus amount */
+                /* sets self's PropertyString stat to a specific value */
+                case EmoteType.SetMyStringStat:
+
+                    if (WorldObject != null && emote.Stat != null)
+                    {
+                        var stringProperty = (PropertyString)emote.Stat;
+                        var newStringValue = emote.TestString ?? "";
+
+                        WorldObject.SetProperty(stringProperty, newStringValue);
+
+                        if (WorldObject is Player selfStringPlayer)
+                            selfStringPlayer.Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyString(selfStringPlayer, stringProperty, newStringValue));
+                    }
+                    break;
+
+
                 case EmoteType.QuestCompletionCount:
 
                     if (targetObject != null)

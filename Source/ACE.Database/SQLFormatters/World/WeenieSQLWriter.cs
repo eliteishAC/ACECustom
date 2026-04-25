@@ -610,6 +610,7 @@ namespace ACE.Database.SQLFormatters.World
                             break;
 
                         case EmoteType.InqStringStat:
+                        case EmoteType.SetMyStringStat:
                             statLabel = $" /* PropertyString.{(PropertyString)input[i].Stat.Value} */";
                             break;
 
