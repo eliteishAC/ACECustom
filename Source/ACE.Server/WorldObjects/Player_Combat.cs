@@ -158,12 +158,25 @@ namespace ACE.Server.WorldObjects
             {
                 // notify attacker
                 var intDamage = (uint)Math.Round(damageEvent.Damage);
+                var isVitalDrainDamage = damageEvent.DamageType == DamageType.Stamina || damageEvent.DamageType == DamageType.Mana;
+                var defenderVital = GetDefenderVitalForDamageType(target, damageEvent.DamageType);
+                var defenderVitalMax = defenderVital?.MaxValue ?? target.Health.MaxValue;
+                var damagePercent = defenderVitalMax > 0 ? (float)intDamage / defenderVitalMax : 0.0f;
 
-                if (!SquelchManager.Squelches.Contains(this, ChatMessageType.CombatSelf))
-                    Session.Network.EnqueueSend(new GameEventAttackerNotification(Session, target.Name, damageEvent.DamageType, (float)intDamage / target.Health.MaxValue, intDamage, damageEvent.IsCritical, damageEvent.AttackConditions));
+                if (!isVitalDrainDamage)
+                {
+                    if (!SquelchManager.Squelches.Contains(this, ChatMessageType.CombatSelf))
+                        Session.Network.EnqueueSend(new GameEventAttackerNotification(Session, target.Name, damageEvent.DamageType, damagePercent, intDamage, damageEvent.IsCritical, damageEvent.AttackConditions));
+                }
+                else
+                {
+                    var vitalName = GetVitalDisplayName(damageEvent.DamageType);
+                    var attackerDrainMessage = $"You drain {intDamage} points of {vitalName} from {target.Name}.";
+                    SendChatMessage(target, attackerDrainMessage, GetVitalDrainChatMessageType(damageEvent.DamageType));
+                }
 
                 // splatter effects
-                if (targetPlayer == null)
+                if (!isVitalDrainDamage && targetPlayer == null)
                 {
                     Session.Network.EnqueueSend(new GameMessageSound(target.Guid, Sound.HitFlesh1, 0.5f));
                     if (damageEvent.Damage >= target.Health.MaxValue * 0.25f)
@@ -490,23 +503,33 @@ namespace ACE.Server.WorldObjects
             }
 
             var amount = (uint)Math.Round(_amount);
-            var percent = (float)amount / Health.MaxValue;
+            var targetVital = GetDefenderVitalForDamageType(this, damageType) ?? Health;
+            var targetVitalMax = targetVital.MaxValue;
+            var percent = targetVitalMax > 0 ? (float)amount / targetVitalMax : 0.0f;
+            var isVitalDrainDamage = damageType == DamageType.Stamina || damageType == DamageType.Mana;
 
             var equippedCloak = EquippedCloak;
 
-            if (equippedCloak != null && Cloak.HasDamageProc(equippedCloak) && Cloak.RollProc(equippedCloak, percent))
+            if (!isVitalDrainDamage && equippedCloak != null && Cloak.HasDamageProc(equippedCloak) && Cloak.RollProc(equippedCloak, percent))
             {
                 var reducedAmount = Cloak.GetReducedAmount(source, amount);
 
                 Cloak.ShowMessage(this, source, amount, reducedAmount);
 
                 amount = reducedAmount;
-                percent = (float)amount / Health.MaxValue;
+                percent = targetVitalMax > 0 ? (float)amount / targetVitalMax : 0.0f;
             }
 
-            // update health
-            var damageTaken = (uint)-UpdateVitalDelta(Health, (int)-amount);
-            DamageHistory.Add(source, damageType, damageTaken);
+            uint damageTaken;
+            if (damageType == DamageType.Stamina)
+                damageTaken = (uint)-UpdateVitalDelta(Stamina, (int)-amount);
+            else if (damageType == DamageType.Mana)
+                damageTaken = (uint)-UpdateVitalDelta(Mana, (int)-amount);
+            else
+            {
+                damageTaken = (uint)-UpdateVitalDelta(Health, (int)-amount);
+                DamageHistory.Add(source, damageType, damageTaken);
+            }
 
             // update stamina
             if (CombatMode != CombatMode.NonCombat)
@@ -521,7 +544,7 @@ namespace ACE.Server.WorldObjects
             //if (Fellowship != null)
                 //Fellowship.OnVitalUpdate(this);
 
-            if (Health.Current <= 0)
+            if (!isVitalDrainDamage && Health.Current <= 0)
             {
                 OnDeath(new DamageHistoryInfo(source), damageType, crit);
                 Die();
@@ -538,15 +561,27 @@ namespace ACE.Server.WorldObjects
             // send network messages
             if (source is Creature creature)
             {
-                if (!SquelchManager.Squelches.Contains(source, ChatMessageType.CombatEnemy))
-                    Session.Network.EnqueueSend(new GameEventDefenderNotification(Session, creature.Name, damageType, percent, amount, damageLocation, crit, attackConditions));
+                if (!isVitalDrainDamage)
+                {
+                    if (!SquelchManager.Squelches.Contains(source, ChatMessageType.CombatEnemy))
+                        Session.Network.EnqueueSend(new GameEventDefenderNotification(Session, creature.Name, damageType, percent, amount, damageLocation, crit, attackConditions));
+                }
+                else
+                {
+                    var vitalName = GetVitalDisplayName(damageType);
+                    var defenderDrainMessage = $"{creature.Name} drains {amount} points of your {vitalName}.";
+                    SendChatMessage(creature, defenderDrainMessage, GetVitalDrainChatMessageType(damageType));
+                }
 
-                var hitSound = new GameMessageSound(Guid, GetHitSound(source, bodyPart), 1.0f);
-                var splatter = new GameMessageScript(Guid, (PlayScript)Enum.Parse(typeof(PlayScript), "Splatter" + creature.GetSplatterHeight() + creature.GetSplatterDir(this)));
-                EnqueueBroadcast(hitSound, splatter);
+                if (!isVitalDrainDamage)
+                {
+                    var hitSound = new GameMessageSound(Guid, GetHitSound(source, bodyPart), 1.0f);
+                    var splatter = new GameMessageScript(Guid, (PlayScript)Enum.Parse(typeof(PlayScript), "Splatter" + creature.GetSplatterHeight() + creature.GetSplatterDir(this)));
+                    EnqueueBroadcast(hitSound, splatter);
+                }
             }
 
-            if (percent >= 0.1f)
+            if (!isVitalDrainDamage && percent >= 0.1f)
             {
                 // Wound1 - Aahhh!    - elemental attacks above some threshold
                 // Wound2 - Deep Ugh! - bludgeoning attacks above some threshold
@@ -563,7 +598,7 @@ namespace ACE.Server.WorldObjects
                 EnqueueBroadcast(new GameMessageSound(Guid, woundSound, 1.0f));
             }
 
-            if (equippedCloak != null && Cloak.HasProcSpell(equippedCloak))
+            if (!isVitalDrainDamage && equippedCloak != null && Cloak.HasProcSpell(equippedCloak))
                 Cloak.TryProcSpell(this, source, equippedCloak, percent);
 
             // if player attacker, update PK timer
@@ -571,6 +606,27 @@ namespace ACE.Server.WorldObjects
                 UpdatePKTimers(attacker, this);
 
             return (int)damageTaken;
+        }
+
+        private static ACE.Server.WorldObjects.Entity.CreatureVital GetDefenderVitalForDamageType(Creature creature, DamageType damageType)
+        {
+            return damageType switch
+            {
+                DamageType.Stamina => creature.Stamina,
+                DamageType.Mana => creature.Mana,
+                _ => creature.Health,
+            };
+        }
+
+        private static string GetVitalDisplayName(DamageType damageType)
+        {
+            return damageType == DamageType.Mana ? "mana" : "stamina";
+        }
+
+        private static ChatMessageType GetVitalDrainChatMessageType(DamageType damageType)
+        {
+            // Use yellow for stamina drains and magic blue for mana drains.
+            return damageType == DamageType.Mana ? ChatMessageType.Magic : ChatMessageType.Social;
         }
 
         /// <summary>
@@ -897,7 +953,13 @@ namespace ACE.Server.WorldObjects
 
         public override bool CanDamage(Creature target)
         {
-            return target.Attackable && !target.Teleporting && !(target is CombatPet);
+            if (target == null)
+                return false;
+
+            if (!target.Attackable || target.Teleporting || target is CombatPet)
+                return false;
+
+            return true;
         }
 
         // http://acpedia.org/wiki/Announcements_-_2002/04_-_Betrayal
