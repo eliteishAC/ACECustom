@@ -904,13 +904,13 @@ namespace ACE.Server.WorldObjects
             if (target == null)
                 return false;
 
+            if (target is Player player && player.CloakStatus == CloakStatus.Creature)
+                return false;
+
             if (!target.Attackable || target.Teleporting || target is CombatPet)
                 return false;
 
-            // PropertyBool.AllowFriendlyPlayerDamage (9041): when not explicitly true, friendly players cannot damage this creature.
-            // Use GetValueOrDefault(false) so that unset (null) is treated as "block friendly damage", matching the
-            // creature-to-player check in Creature_Combat.BlocksFriendlyPlayerDamage (line ~1159).
-            if (!target.AllowFriendlyPlayerDamage.GetValueOrDefault(false) && target.IsFriend(this))
+            if (BlocksFriendlyPlayerDamage(target))
                 return false;
 
             return true;
