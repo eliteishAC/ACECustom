@@ -178,10 +178,14 @@ namespace ACE.Server.WorldObjects
                 // handle Dirty Fighting
                 if (GetCreatureSkill(Skill.DirtyFighting).AdvancementClass >= SkillAdvancementClass.Trained)
                     FightDirty(target, damageEvent.Weapon);
-                
-                target.EmoteManager.OnDamage(this);
+            }
 
-                if (damageEvent.IsCritical)
+            // WoundedTaunt / ReceiveDamage: run on any connecting hit, including lethal (TakeDamage may have killed the target).
+            if (damageEvent.HasDamage)
+            {
+                target.EmoteManager.OnDamage(this, damageEvent.DamageType);
+
+                if (damageEvent.IsCritical && target.IsAlive)
                     target.EmoteManager.OnReceiveCritical(this);
             }
             
@@ -897,7 +901,19 @@ namespace ACE.Server.WorldObjects
 
         public override bool CanDamage(Creature target)
         {
-            return target.Attackable && !target.Teleporting && !(target is CombatPet);
+            if (target == null)
+                return false;
+
+            if (target is Player player && player.CloakStatus == CloakStatus.Creature)
+                return false;
+
+            if (!target.Attackable || target.Teleporting || target is CombatPet)
+                return false;
+
+            if (BlocksFriendlyPlayerDamage(target))
+                return false;
+
+            return true;
         }
 
         // http://acpedia.org/wiki/Announcements_-_2002/04_-_Betrayal
@@ -1184,7 +1200,10 @@ namespace ACE.Server.WorldObjects
 
             // Cache CloakStatus to avoid multiple property reads (thread-safe via BiotaDatabaseLock)
             CloakStatus? targetCloakStatus = targetPlayer?.CloakStatus;
-            bool isCloakedAsCreature = targetCloakStatus == CloakStatus.Creature || targetCloakStatus == CloakStatus.Hybrid;
+            bool isJailed = targetPlayer?.IsInJail() ?? false;
+            bool isCloakedAsCreature = isJailed
+                || targetCloakStatus == CloakStatus.Creature
+                || targetCloakStatus == CloakStatus.Hybrid;
 
             // If the target is a player who is cloaked as a creature or hybrid, treat them as a creature for PK rules so that normal players can attack them just like any other monster.
             // This allows cloaked admins to be freely attackable without requiring PK status.
