@@ -18,6 +18,7 @@ namespace ACE.Server.WorldObjects
 {
     partial class Creature
     {
+        private readonly object _targetingCacheLock = new object();
         private HashSet<CreatureType> _cachedFriendTypes = new HashSet<CreatureType>();
         private HashSet<CreatureType> _cachedFoeTypes = new HashSet<CreatureType>();
         private bool _attackNonSelf;
@@ -37,28 +38,6 @@ namespace ACE.Server.WorldObjects
             !string.IsNullOrEmpty(FriendTypeString) ||
             !string.IsNullOrEmpty(FoeTypeString) ||
             !string.IsNullOrEmpty(FriendlyQuestString);
-
-        /// <summary>
-        /// True when this creature uses FriendlyQuestString to determine player allegiance.
-        /// </summary>
-        public bool UsesFriendlyQuestTargeting => !string.IsNullOrEmpty(FriendlyQuestString);
-
-        /// <summary>
-        /// Returns true if <paramref name="player"/> has the quest stamp named by this creature's FriendlyQuestString,
-        /// making the player a friendly-quest ally (should not be attacked).
-        /// </summary>
-        public bool IsFriendlyQuestAlly(Player player)
-        {
-            if (player == null || string.IsNullOrEmpty(FriendlyQuestString))
-                return false;
-
-            // Normalize before lookup: FriendlyQuestString may carry an @comment suffix
-            // (e.g. "Friendly@some note") that GetQuestName strips. Passing the raw value
-            // to HasQuest would cause a false-negative because HasQuest also normalizes
-            // internally, making the lookup miss a quest that was stamped under the plain name.
-            var questName = QuestManager.GetQuestName(FriendlyQuestString);
-            return !string.IsNullOrEmpty(questName) && player.QuestManager.HasQuest(questName);
-        }
 
         private static bool IsPseudoTargetingCreatureType(ACE.Entity.Enum.CreatureType ct) =>
             ct >= ACE.Entity.Enum.CreatureType.QuestPlayer && ct <= ACE.Entity.Enum.CreatureType.AttackNonSelf;
@@ -1459,6 +1438,10 @@ namespace ACE.Server.WorldObjects
         public bool PotentialFoe(Creature creature)
         {
             EnsureTargetingCacheCurrent();
+            var cachedFriendTypes = _cachedFriendTypes;
+            var cachedFoeTypes = _cachedFoeTypes;
+            var attackAll = _attackAll;
+            var attackNonSelf = _attackNonSelf;
 
             if (IsUsingCustomTargetingLists)
             {
@@ -1466,27 +1449,19 @@ namespace ACE.Server.WorldObjects
                 if (creature is Player player && IsExplicitlyFriendlyPlayer(player))
                     return false;
 
-                // When FriendlyQuestString is the only custom targeting in use, a player who is NOT
-                // an explicit ally should still be treated as a valid foe.  Without this guard the
-                // method falls through to the empty _attackAll/_attackNonSelf/_cachedFoeTypes checks
-                // and returns false, permanently preventing GetAttackTargetsUncached / AlertMonster
-                // from re-aggroing a player who lost the quest stamp.
-                if (creature is Player && UsesFriendlyQuestTargeting)
-                    return true;
-
                 // Explicit non-player friendship should also override custom hostility rules.
-                if (creature is not Player && creature.CreatureType is { } friendType && _cachedFriendTypes.Contains(friendType))
+                if (creature is not Player && creature.CreatureType is { } friendType && cachedFriendTypes.Contains(friendType))
                     return false;
 
                 // Attack All pseudo-type (998)
-                if (_attackAll) return true;
+                if (attackAll) return true;
 
                 // Attack Non-Self (999)
-                if (_attackNonSelf && (creature is Player || creature.CreatureType != CreatureType)) return true;
+                if (attackNonSelf && (creature is Player || creature.CreatureType != CreatureType)) return true;
 
                 // Explicitly designated foes (including pseudo-type Player 997)
-                if (creature is Player && _cachedFoeTypes.Contains(ACE.Entity.Enum.CreatureType.Player)) return true;
-                if (creature.CreatureType is { } creatureType && _cachedFoeTypes.Contains(creatureType)) return true;
+                if (creature is Player && cachedFoeTypes.Contains(ACE.Entity.Enum.CreatureType.Player)) return true;
+                if (creature.CreatureType is { } creatureType && cachedFoeTypes.Contains(creatureType)) return true;
 
             }
             else
@@ -1504,13 +1479,17 @@ namespace ACE.Server.WorldObjects
             creature.EnsureTargetingCacheCurrent();
             if (creature.IsUsingCustomTargetingLists)
             {
+                var creatureCachedFoeTypes = creature._cachedFoeTypes;
+                var creatureAttackAll = creature._attackAll;
+                var creatureAttackNonSelf = creature._attackNonSelf;
+
                 if (creature.IsFriend(this))
                     return false;
 
-                if (creature._attackAll) return true;
-                if (creature._attackNonSelf && (this is Player || CreatureType != creature.CreatureType)) return true;
-                if (this is Player && creature._cachedFoeTypes.Contains(ACE.Entity.Enum.CreatureType.Player)) return true;
-                if (CreatureType is { } selfType && creature._cachedFoeTypes.Contains(selfType)) return true;
+                if (creatureAttackAll) return true;
+                if (creatureAttackNonSelf && (this is Player || CreatureType != creature.CreatureType)) return true;
+                if (this is Player && creatureCachedFoeTypes.Contains(ACE.Entity.Enum.CreatureType.Player)) return true;
+                if (CreatureType is { } selfType && creatureCachedFoeTypes.Contains(selfType)) return true;
             }
             else if (creature.FoeType != null)
             {
@@ -1523,14 +1502,16 @@ namespace ACE.Server.WorldObjects
 
         private bool IsExplicitlyFriendlyPlayer(Player player)
         {
-            if (_cachedFriendTypes.Contains(ACE.Entity.Enum.CreatureType.Player))
+            var cachedFriendTypes = _cachedFriendTypes;
+
+            if (cachedFriendTypes.Contains(ACE.Entity.Enum.CreatureType.Player))
                 return true;
 
-            if (_cachedFriendTypes.Contains(ACE.Entity.Enum.CreatureType.QuestPlayer) && MatchesQuestPlayerAffinity(player))
+            if (cachedFriendTypes.Contains(ACE.Entity.Enum.CreatureType.QuestPlayer) && MatchesQuestPlayerAffinity(player))
                 return true;
 
             // FriendlyQuestString alone exempts players with that stamp (no need for QuestPlayer/996 in FriendTypeString)
-            if (IsFriendlyQuestAlly(player))
+            if (!string.IsNullOrEmpty(FriendlyQuestString) && player.QuestManager.HasQuest(FriendlyQuestString))
                 return true;
 
             return false;
@@ -1538,8 +1519,10 @@ namespace ACE.Server.WorldObjects
 
         private bool MatchesQuestPlayerAffinity(Player player)
         {
-            // Delegate to IsFriendlyQuestAlly so normalization and null-guards are applied consistently.
-            return IsFriendlyQuestAlly(player);
+            if (player == null || string.IsNullOrEmpty(FriendlyQuestString))
+                return false;
+
+            return player.QuestManager.HasQuest(FriendlyQuestString);
         }
 
         private void EnsureTargetingCacheCurrent()
@@ -1550,14 +1533,17 @@ namespace ACE.Server.WorldObjects
             var friendlyQuestStr = FriendlyQuestString;
             var foeType = FoeType;
 
-            if (!_targetingCacheInitialized ||
-                _lastTargetingFlags != tf ||
-                _lastFoeType != foeType ||
-                !string.Equals(_lastFriendTypeString, friendStr, StringComparison.Ordinal) ||
-                !string.Equals(_lastFoeTypeString, foeStr, StringComparison.Ordinal) ||
-                !string.Equals(_lastFriendlyQuestString, friendlyQuestStr, StringComparison.Ordinal))
+            lock (_targetingCacheLock)
             {
-                UpdateTargetingCache();
+                if (!_targetingCacheInitialized ||
+                    _lastTargetingFlags != tf ||
+                    _lastFoeType != foeType ||
+                    !string.Equals(_lastFriendTypeString, friendStr, StringComparison.Ordinal) ||
+                    !string.Equals(_lastFoeTypeString, foeStr, StringComparison.Ordinal) ||
+                    !string.Equals(_lastFriendlyQuestString, friendlyQuestStr, StringComparison.Ordinal))
+                {
+                    UpdateTargetingCacheInternal(tf, foeType, friendStr, foeStr, friendlyQuestStr);
+                }
             }
         }
 
@@ -1575,74 +1561,94 @@ namespace ACE.Server.WorldObjects
 
         public void UpdateTargetingCache()
         {
-            _cachedFriendTypes.Clear();
-            _cachedFoeTypes.Clear();
-
             var tf = TargetingFlags;
-            _attackAll = tf.HasFlag(CustomTargetingBehavior.AttackAll);
-            _attackNonSelf = tf.HasFlag(CustomTargetingBehavior.AttackNonSelf);
-            if (IsUsingCustomTargetingLists && FoeType == ACE.Entity.Enum.CreatureType.AttackNonSelf)
-                _attackNonSelf = true;
+            var friendStr = FriendTypeString;
+            var foeStr = FoeTypeString;
+            var friendlyQuestStr = FriendlyQuestString;
+            var foeType = FoeType;
+
+            lock (_targetingCacheLock)
+            {
+                UpdateTargetingCacheInternal(tf, foeType, friendStr, foeStr, friendlyQuestStr);
+            }
+        }
+
+        private void UpdateTargetingCacheInternal(CustomTargetingBehavior tf, CreatureType? foeType, string friendStr, string foeStr, string friendlyQuestStr)
+        {
+            var usingCustomTargetingLists =
+                tf != CustomTargetingBehavior.None ||
+                !string.IsNullOrEmpty(friendStr) ||
+                !string.IsNullOrEmpty(foeStr) ||
+                !string.IsNullOrEmpty(friendlyQuestStr);
+
+            var newFriendTypes = new HashSet<CreatureType>();
+            var newFoeTypes = new HashSet<CreatureType>();
+            var attackAll = tf.HasFlag(CustomTargetingBehavior.AttackAll);
+            var attackNonSelf = tf.HasFlag(CustomTargetingBehavior.AttackNonSelf);
+            if (usingCustomTargetingLists && foeType == ACE.Entity.Enum.CreatureType.AttackNonSelf)
+                attackNonSelf = true;
 
             if (tf.HasFlag(CustomTargetingBehavior.FriendlyToPlayers))
-                _cachedFriendTypes.Add(ACE.Entity.Enum.CreatureType.Player);
+                newFriendTypes.Add(ACE.Entity.Enum.CreatureType.Player);
             if (tf.HasFlag(CustomTargetingBehavior.FriendlyToQuestPlayer))
-                _cachedFriendTypes.Add(ACE.Entity.Enum.CreatureType.QuestPlayer);
+                newFriendTypes.Add(ACE.Entity.Enum.CreatureType.QuestPlayer);
             if (tf.HasFlag(CustomTargetingBehavior.HostileToAllPlayers))
-                _cachedFoeTypes.Add(ACE.Entity.Enum.CreatureType.Player);
+                newFoeTypes.Add(ACE.Entity.Enum.CreatureType.Player);
 
+            if (usingCustomTargetingLists)
+            {
+                // Option 1: preserve legacy explicit foe typing alongside custom lists.
+                // If custom targeting is active, fold non-pseudo legacy Int.73 FoeType into the custom foe cache.
+                if (foeType is { } legacyFoeType && !IsPseudoTargetingCreatureType(legacyFoeType))
+                    newFoeTypes.Add(legacyFoeType);
+
+                if (!string.IsNullOrEmpty(friendStr))
+                {
+                    var types = friendStr.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var typeStr in types)
+                    {
+                        if (uint.TryParse(typeStr.Trim(), out var typeId))
+                        {
+                            var ct = (CreatureType)typeId;
+                            if (IsPseudoTargetingCreatureType(ct))
+                                log.Warn($"{Name} ({Guid}): FriendTypeString contains pseudo CreatureType {(uint)ct}; use PropertyInt.TargetingFlags instead.");
+                            else
+                                newFriendTypes.Add(ct);
+                        }
+                        else
+                            log.Error($"{Name} ({Guid}): Invalid CreatureType ID in FriendTypeString: {typeStr}");
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(foeStr))
+                {
+                    var types = foeStr.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var typeStr in types)
+                    {
+                        if (uint.TryParse(typeStr.Trim(), out var typeId))
+                        {
+                            var foeCreatureType = (CreatureType)typeId;
+                            if (IsPseudoTargetingCreatureType(foeCreatureType))
+                                log.Warn($"{Name} ({Guid}): FoeTypeString contains pseudo CreatureType {(uint)foeCreatureType}; use PropertyInt.TargetingFlags instead.");
+                            else
+                                newFoeTypes.Add(foeCreatureType);
+                        }
+                        else
+                            log.Error($"{Name} ({Guid}): Invalid CreatureType ID in FoeTypeString: {typeStr}");
+                    }
+                }
+            }
+
+            _cachedFriendTypes = newFriendTypes;
+            _cachedFoeTypes = newFoeTypes;
+            _attackAll = attackAll;
+            _attackNonSelf = attackNonSelf;
             _targetingCacheInitialized = true;
-            _lastTargetingFlags = TargetingFlags;
-            _lastFoeType = FoeType;
-            _lastFriendTypeString = FriendTypeString;
-            _lastFoeTypeString = FoeTypeString;
-            _lastFriendlyQuestString = FriendlyQuestString;
-
-            if (!IsUsingCustomTargetingLists)
-                return;
-
-            // Option 1: preserve legacy explicit foe typing alongside custom lists.
-            // If custom targeting is active, fold non-pseudo legacy Int.73 FoeType into the custom foe cache.
-            if (FoeType is { } legacyFoeType && !IsPseudoTargetingCreatureType(legacyFoeType))
-                _cachedFoeTypes.Add(legacyFoeType);
-
-            var friendStr = FriendTypeString;
-            if (!string.IsNullOrEmpty(friendStr))
-            {
-                var types = friendStr.Split(',', StringSplitOptions.RemoveEmptyEntries);
-                foreach (var typeStr in types)
-                {
-                    if (uint.TryParse(typeStr.Trim(), out var typeId))
-                    {
-                        var ct = (CreatureType)typeId;
-                        if (IsPseudoTargetingCreatureType(ct))
-                            log.Warn($"{Name} ({Guid}): FriendTypeString contains pseudo CreatureType {(uint)ct}; use PropertyInt.TargetingFlags instead.");
-                        else
-                            _cachedFriendTypes.Add(ct);
-                    }
-                    else
-                        log.Error($"{Name} ({Guid}): Invalid CreatureType ID in FriendTypeString: {typeStr}");
-                }
-            }
-
-            var foeStr = FoeTypeString;
-            if (!string.IsNullOrEmpty(foeStr))
-            {
-                var types = foeStr.Split(',', StringSplitOptions.RemoveEmptyEntries);
-                foreach (var typeStr in types)
-                {
-                    if (uint.TryParse(typeStr.Trim(), out var typeId))
-                    {
-                        var foeCreatureType = (CreatureType)typeId;
-                        if (IsPseudoTargetingCreatureType(foeCreatureType))
-                            log.Warn($"{Name} ({Guid}): FoeTypeString contains pseudo CreatureType {(uint)foeCreatureType}; use PropertyInt.TargetingFlags instead.");
-                        else
-                            _cachedFoeTypes.Add(foeCreatureType);
-                    }
-                    else
-                        log.Error($"{Name} ({Guid}): Invalid CreatureType ID in FoeTypeString: {typeStr}");
-                }
-            }
+            _lastTargetingFlags = tf;
+            _lastFoeType = foeType;
+            _lastFriendTypeString = friendStr;
+            _lastFoeTypeString = foeStr;
+            _lastFriendlyQuestString = friendlyQuestStr;
         }
 
         /// <summary>
@@ -1656,6 +1662,8 @@ namespace ACE.Server.WorldObjects
         public bool IsFriend(Creature creature)
         {
             EnsureTargetingCacheCurrent();
+            var cachedFriendTypes = _cachedFriendTypes;
+            var attackAll = _attackAll;
 
             if (IsUsingCustomTargetingLists)
             {
@@ -1665,11 +1673,11 @@ namespace ACE.Server.WorldObjects
                     return true;
 
                 // Handle standard defined friends
-                if (creature is not Player && creature.CreatureType is { } friendCt && _cachedFriendTypes.Contains(friendCt))
+                if (creature is not Player && creature.CreatureType is { } friendCt && cachedFriendTypes.Contains(friendCt))
                     return true;
 
                 // If this creature wants to attack everything (998), no one else is a friend.
-                if (_attackAll)
+                if (attackAll)
                     return false;
 
                 // Default behavior: same type is friendly unless target is a Player.
@@ -1712,17 +1720,6 @@ namespace ACE.Server.WorldObjects
                 return PhysicsObj.ObjMaint.RetaliateTargetsContainsKey(wo.Guid.Full);
             else
                 return false;
-        }
-
-        /// <summary>
-        /// Removes a single entry from this creature's retaliate-targets list.
-        /// Wraps the private <c>ObjMaint.RemoveRetaliateTarget</c> so higher layers don't need
-        /// direct access to physics internals.
-        /// </summary>
-        public void RemoveRetaliateTarget(WorldObject wo)
-        {
-            if (wo?.PhysicsObj == null) return;
-            PhysicsObj?.ObjMaint?.RemoveRetaliateTarget(wo.PhysicsObj);
         }
 
         public void ClearRetaliateTargets()
