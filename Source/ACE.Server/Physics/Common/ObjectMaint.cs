@@ -1269,7 +1269,6 @@ namespace ACE.Server.Physics.Common
             rwLock.EnterWriteLock();
             try
             {
-                VisibleTargets.Remove(obj.ID);
                 return RetaliateTargets.Remove(obj.ID);
             }
             finally
