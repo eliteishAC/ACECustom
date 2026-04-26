@@ -546,10 +546,10 @@ namespace ACE.Server.WorldObjects.Managers
                 /* sets self's PropertyString stat to a specific value */
                 case EmoteType.SetMyStringStat:
 
-                    if (WorldObject != null && emote.Stat != null)
+                    if (WorldObject != null && emote.Stat != null && emote.TestString != null)
                     {
                         var stringProperty = (PropertyString)emote.Stat;
-                        var newStringValue = emote.TestString ?? "";
+                        var newStringValue = emote.TestString;
 
                         WorldObject.SetProperty(stringProperty, newStringValue);
 
