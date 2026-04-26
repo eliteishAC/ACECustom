@@ -1517,6 +1517,22 @@ namespace ACE.Server.WorldObjects
             return false;
         }
 
+        /// <summary>
+        /// True when this creature uses FriendlyQuestString-based ally filtering.
+        /// </summary>
+        public bool UsesFriendlyQuestTargeting => !string.IsNullOrEmpty(FriendlyQuestString);
+
+        /// <summary>
+        /// Returns true when a player currently matches this creature's FriendlyQuestString affinity.
+        /// </summary>
+        public bool IsFriendlyQuestAlly(Player player)
+        {
+            if (!UsesFriendlyQuestTargeting || player == null)
+                return false;
+
+            return player.QuestManager.HasQuest(FriendlyQuestString);
+        }
+
         private bool MatchesQuestPlayerAffinity(Player player)
         {
             if (player == null || string.IsNullOrEmpty(FriendlyQuestString))
@@ -1720,6 +1736,14 @@ namespace ACE.Server.WorldObjects
                 return PhysicsObj.ObjMaint.RetaliateTargetsContainsKey(wo.Guid.Full);
             else
                 return false;
+        }
+
+        public bool RemoveRetaliateTarget(WorldObject wo)
+        {
+            if (wo == null)
+                return false;
+
+            return PhysicsObj.ObjMaint.RemoveRetaliateTarget(wo.PhysicsObj);
         }
 
         public void ClearRetaliateTargets()
