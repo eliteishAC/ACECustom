@@ -13,5 +13,6 @@ namespace ACE.Common
         public ChatConfiguration Chat { get; set; } = new ChatConfiguration();
 
         public DDDConfiguration DDD { get; set; } = new DDDConfiguration();
+        
     }
 }
