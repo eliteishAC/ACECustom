@@ -599,11 +599,11 @@ namespace ACE.Server.WorldObjects.Managers
                 /* sets self's PropertyInt stat to a specific amount */
                 case EmoteType.SetMyIntStat:
 
-                    if (WorldObject != null && emote.Stat != null)
+                    if (WorldObject != null && emote.Stat != null && emote.Amount.HasValue)
                     {
                         var intProperty = (PropertyInt)emote.Stat;
-                        var newValue = emote.Amount ?? 1; 
-                        
+                        var newValue = emote.Amount.Value;
+
                         WorldObject.SetProperty(intProperty, newValue);
 
                         if (WorldObject is Player selfPlayer)
@@ -614,11 +614,11 @@ namespace ACE.Server.WorldObjects.Managers
                 /* sets self's PropertyInt64 stat to a specific amount */
                 case EmoteType.SetMyInt64Stat:
 
-                    if (WorldObject != null && emote.Stat != null)
+                    if (WorldObject != null && emote.Stat != null && emote.Amount64.HasValue)
                     {
                         var int64Property = (PropertyInt64)emote.Stat;
-                        var newValue = emote.Amount64 ?? 1; 
-                        
+                        var newValue = emote.Amount64.Value;
+
                         WorldObject.SetProperty(int64Property, newValue);
 
                         if (WorldObject is Player selfPlayer)
