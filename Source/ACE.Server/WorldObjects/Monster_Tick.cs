@@ -147,7 +147,9 @@ namespace ACE.Server.WorldObjects
             // If the current non-player foe is valid, pin it via retaliate so we don't bounce Awake<->Idle.
             if (creatureTarget != null && combatPet == null && !IsVisibleTarget(creatureTarget))
             {
-                if (UsesExtendedFoeTargeting && creatureTarget is not Player && PotentialFoe(creatureTarget))
+                if (UsesExtendedFoeTargeting
+                    && creatureTarget is not Player
+                    && (PotentialFoe(creatureTarget) || AllowFactionCombat(creatureTarget)))
                     AddRetaliateTarget(creatureTarget);
 
                 if (!IsVisibleTarget(creatureTarget))
