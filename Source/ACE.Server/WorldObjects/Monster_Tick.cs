@@ -135,6 +135,10 @@ namespace ACE.Server.WorldObjects
 
             if (creatureTarget != null && creatureTarget.IsDead)
             {
+                if (HasRetaliateTarget(creatureTarget))
+                    RemoveRetaliateTarget(creatureTarget);
+                AttackTarget = null;
+                InvalidateTargetCaches();
                 FindNextTarget();
                 return;
             }
