@@ -3849,10 +3849,9 @@ namespace ACE.Server.WorldObjects.Managers
 
         private bool TryMarkSingleLocalBroadcastSent(PropertiesEmote emoteSet, PropertiesEmoteAction emote)
         {
-            if (emote.DatabaseRecordId.HasValue)
-                return _singleLocalBroadcastsSent.Add($"db:{emote.DatabaseRecordId.Value}");
-
-            var key = $"fallback:{emoteSet.Category}:{emoteSet.WeenieClassId}:{emoteSet.Quest}:{emote.Type}:{emote.Delay}:{emote.Message}";
+            // Use per-instance references to avoid collisions from reused DatabaseRecordId values
+            // in dynamic emotes (action ids commonly start at 1 for each dynamic emote set).
+            var key = $"instance:{RuntimeHelpers.GetHashCode(emoteSet)}:{RuntimeHelpers.GetHashCode(emote)}";
             return _singleLocalBroadcastsSent.Add(key);
         }
 
