@@ -240,6 +240,10 @@ namespace ACE.Entity.Enum.Properties
         /// Single-use, extremely rare item obtained by exchanging 5000 Flawed Siphon Lenses.
         /// </summary>
         IsGuaranteedCaptureLens           = 9042,
+        /// <summary>
+        /// If TRUE, this world object suppresses configured spell schools even when not awake/aggro.
+        /// </summary>
+        IsPassiveSpellSuppressor          = 9045,
     }
 }
 

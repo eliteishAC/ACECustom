@@ -742,6 +742,10 @@ namespace ACE.Entity.Enum.Properties
         /// Custom targeting behavior flags (<see cref="ACE.Entity.Enum.CustomTargetingBehavior"/>).
         /// </summary>
         TargetingFlags                          = 9046,
+        /// <summary>
+        /// Bitmask of magic schools this creature suppresses for nearby players (see SpellSuppressionSchools).
+        /// </summary>
+        SpellSuppressionSchools                 = 9047,
     }
 
     public static class PropertyIntExtensions
@@ -889,6 +893,9 @@ namespace ACE.Entity.Enum.Properties
                 case PropertyInt.UseRequiresSkillSpec:
                 case PropertyInt.SkillToBeAltered:
                     return System.Enum.GetName(typeof(Skill), value);
+
+                case PropertyInt.SpellSuppressionSchools:
+                    return System.Enum.GetName(typeof(SpellSuppressionSchools), value);
 
                 case PropertyInt.HookGroup:
                     return System.Enum.GetName(typeof(HookGroupType), value);
