@@ -132,15 +132,25 @@ namespace ACE.Server.WorldObjects
             }
 
             var damageEvent = DamageEvent.CalculateDamage(this, target, damageSource);
+            uint appliedDamage = 0;
 
             if (damageEvent.HasDamage)
             {
                 OnDamageTarget(target, damageEvent.CombatType, damageEvent.IsCritical);
 
                 if (targetPlayer != null)
-                    targetPlayer.TakeDamage(this, damageEvent);
+                    appliedDamage = (uint)Math.Max(0, targetPlayer.TakeDamage(this, damageEvent));
                 else
-                    target.TakeDamage(this, damageEvent.DamageType, damageEvent.Damage, damageEvent.IsCritical);
+                {
+                    // ILT: Monster Mana Barrier G�� pre-absorb before damage lands
+                    if (target.HasManaBarrier)
+                    {
+                        var mbResult = target.TryAbsorbWithManaBarrier(ref damageEvent.Damage, damageEvent.DamageType);
+                        if (mbResult.AmountAbsorbed > 0)
+                            damageEvent.AmountAbsorbed = mbResult.AmountAbsorbed;
+                    }
+                    appliedDamage = target.TakeDamage(this, damageEvent.DamageType, damageEvent.Damage, damageEvent.IsCritical);
+                }
             }
             else
             {
@@ -158,12 +168,70 @@ namespace ACE.Server.WorldObjects
             {
                 // notify attacker
                 var intDamage = (uint)Math.Round(damageEvent.Damage);
+                var isVitalDrainDamage = damageEvent.DamageType == DamageType.Stamina || damageEvent.DamageType == DamageType.Mana;
+                var displayedDamage = isVitalDrainDamage ? appliedDamage : intDamage;
+                var defenderVital = GetDefenderVitalForDamageType(target, damageEvent.DamageType);
+                var defenderVitalMax = defenderVital?.MaxValue ?? target.Health.MaxValue;
+                var damagePercent = defenderVitalMax > 0 ? (float)displayedDamage / defenderVitalMax : 0.0f;
+                if (isVitalDrainDamage)
+                {
+                    var vitalName = GetVitalDisplayName(damageEvent.DamageType);
+                    var attackerDrainMessage = $"You drain {displayedDamage} points of {vitalName} from {target.Name}.";
+                    SendChatMessage(target, attackerDrainMessage, ChatMessageType.CombatSelf);
+                }
+                else if (!SquelchManager.Squelches.Contains(this, ChatMessageType.CombatSelf))
+                {
+                    // ILT: compute shared message components once for both message paths
+                    var critMsg = damageEvent.IsCritical ? "Critical hit! " : "";
+                    string verb = "", plural = "";
+                    Strings.GetAttackVerb(damageEvent.DamageType, (float)intDamage / target.Health.MaxValue, ref verb, ref plural);
+                    var isSplitArrowHit = target.GetProperty(PropertyBool.LastHitWasSplitArrow) is true;
+                    var attackerSubject = isSplitArrowHit ? $"Your split arrow {plural}" : $"You {verb}";
 
-                if (!SquelchManager.Squelches.Contains(this, ChatMessageType.CombatSelf))
-                    Session.Network.EnqueueSend(new GameEventAttackerNotification(Session, target.Name, damageEvent.DamageType, (float)intDamage / target.Health.MaxValue, intDamage, damageEvent.IsCritical, damageEvent.AttackConditions));
+                    if (damageEvent.AmountAbsorbed > 0)
+                    {
+                        if (intDamage > 0)
+                        {
+                            // partial absorption — build custom message with MB suffix, honoring /ilt dmgformat
+                            var mbSuffix = targetPlayer != null
+                                ? targetPlayer.GetManaBarrierSuffix(new ManaBarrierResult { AmountAbsorbed = damageEvent.AmountAbsorbed })
+                                : target.GetManaShieldSuffix(new ManaBarrierResult { AmountAbsorbed = damageEvent.AmountAbsorbed });
+                            var dmgStrMb = Creature.FormatDamage(intDamage, DamageNumberFormat);
+                            var attackerMsg = $"{critMsg}{attackerSubject} {target.Name} for {dmgStrMb} points of {damageEvent.DamageType.ToString().ToLower()} damage!{mbSuffix}";
+                            Session.Network.EnqueueSend(new GameMessageSystemChat(attackerMsg, ChatMessageType.CombatSelf));
+                        }
+                        else if (targetPlayer == null)
+                        {
+                            // monster fully absorbed — TakeDamage doesn't send this message
+                            var ptWord = damageEvent.AmountAbsorbed == 1 ? "point" : "points";
+                            var cur = target.Mana?.Current ?? 0;
+                            var max = target.Mana?.MaxValue ?? 0;
+                            SendMessage($"{target.Name}'s Mana Barrier absorbed {damageEvent.AmountAbsorbed} {ptWord} of damage! [Barrier Remaining: {cur:N0} / {max:N0}]", ChatMessageType.Magic);
+                        }
+                        else
+                        {
+                            // player target fully absorbed — TakeDamage sends the defender message;
+                            // send the attacker a complementary notification so they get feedback too.
+                            var ptWord = damageEvent.AmountAbsorbed == 1 ? "point" : "points";
+                            var cur = targetPlayer.Mana?.Current ?? 0;
+                            var max = targetPlayer.Mana?.MaxValue ?? 0;
+                            SendMessage($"{target.Name}'s Mana Barrier absorbed {damageEvent.AmountAbsorbed} {ptWord} of damage! [Barrier Remaining: {cur:N0} / {max:N0}]", ChatMessageType.Magic);
+                        }
+                    }
+                    else
+                    {
+                        var dmgStr = Creature.FormatDamage(intDamage, DamageNumberFormat);
+                        if (DamageNumberFormat != 0)
+                            Session.Network.EnqueueSend(new GameMessageSystemChat(
+                                $"{critMsg}{attackerSubject} {target.Name} for {dmgStr} points of {damageEvent.DamageType.ToString().ToLower()} damage!",
+                                ChatMessageType.CombatSelf));
+                        else
+                            Session.Network.EnqueueSend(new GameEventAttackerNotification(Session, target.Name, damageEvent.DamageType, (float)intDamage / target.Health.MaxValue, intDamage, damageEvent.IsCritical, damageEvent.AttackConditions));
+                    }
+                }
 
                 // splatter effects
-                if (targetPlayer == null)
+                if (!isVitalDrainDamage && targetPlayer == null)
                 {
                     Session.Network.EnqueueSend(new GameMessageSound(target.Guid, Sound.HitFlesh1, 0.5f));
                     if (damageEvent.Damage >= target.Health.MaxValue * 0.25f)
@@ -426,8 +494,16 @@ namespace ACE.Server.WorldObjects
             var amount = (uint)Math.Round(_amount);
             var percent = (float)amount / Health.MaxValue;
 
-            // update health
-            UpdateVitalDelta(Health, (int)-amount);
+            // G��G�� Mana Barrier G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��
+            var mbDotResult = TryAbsorbWithManaBarrier(ref _amount, damageType);
+            // G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��
+
+            amount = (uint)Math.Round(_amount);
+            percent = (float)amount / Health.MaxValue;
+
+            // update health (skip if fully absorbed)
+            if (!mbDotResult.FullyAbsorbed)
+                UpdateVitalDelta(Health, (int)-amount);
 
             // update stamina
             //UpdateVitalDelta(Stamina, -1);
@@ -440,7 +516,9 @@ namespace ACE.Server.WorldObjects
             //{
                 var nether = damageType == DamageType.Nether ? "nether " : "";
                 var chatMessageType = damageType == DamageType.Nether ? ChatMessageType.Magic : ChatMessageType.Combat;
-                var text = $"You receive {amount} points of periodic {nether}damage.";
+                var mbSuffix = GetManaBarrierSuffix(mbDotResult);
+                var dotDisplayAmount = amount;
+                var text = $"You receive {dotDisplayAmount} points of periodic {nether}damage.{mbSuffix}";
                 SendMessage(text, chatMessageType);
             //}
 
@@ -467,7 +545,12 @@ namespace ACE.Server.WorldObjects
 
         public int TakeDamage(WorldObject source, DamageEvent damageEvent)
         {
-            return TakeDamage(source, damageEvent.DamageType, damageEvent.Damage, damageEvent.BodyPart, damageEvent.IsCritical, damageEvent.AttackConditions);
+            var result = TakeDamageInternal(source, damageEvent.DamageType, damageEvent.Damage, damageEvent.BodyPart, out var absorbed, damageEvent.IsCritical, damageEvent.AttackConditions);
+            // ILT: TakeDamageInternal rounds the float to uint before Mana Barrier runs,
+            // so subtract from the rounded value to avoid fractional mismatches in attacker messaging.
+            damageEvent.Damage = Math.Max(0, (float)Math.Round(damageEvent.Damage) - absorbed);
+            damageEvent.AmountAbsorbed = absorbed;
+            return result;
         }
 
         /// <summary>
@@ -475,6 +558,12 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public int TakeDamage(WorldObject source, DamageType damageType, float _amount, BodyPart bodyPart, bool crit = false, AttackConditions attackConditions = AttackConditions.None)
         {
+            return TakeDamageInternal(source, damageType, _amount, bodyPart, out _, crit, attackConditions);
+        }
+
+        private int TakeDamageInternal(WorldObject source, DamageType damageType, float _amount, BodyPart bodyPart, out uint amountAbsorbed, bool crit, AttackConditions attackConditions)
+        {
+            amountAbsorbed = 0;
             if (Invincible || IsDead) return 0;
 
             if (source is Creature creatureAttacker)
@@ -494,23 +583,45 @@ namespace ACE.Server.WorldObjects
             }
 
             var amount = (uint)Math.Round(_amount);
-            var percent = (float)amount / Health.MaxValue;
+            var targetVital = GetDefenderVitalForDamageType(this, damageType) ?? Health;
+            var targetVitalMax = targetVital.MaxValue;
+            var percent = targetVitalMax > 0 ? (float)amount / targetVitalMax : 0.0f;
+            var isVitalDrainDamage = damageType == DamageType.Stamina || damageType == DamageType.Mana;
 
             var equippedCloak = EquippedCloak;
 
-            if (equippedCloak != null && Cloak.HasDamageProc(equippedCloak) && Cloak.RollProc(equippedCloak, percent))
+            if (!isVitalDrainDamage && equippedCloak != null && Cloak.HasDamageProc(equippedCloak) && Cloak.RollProc(equippedCloak, percent))
             {
                 var reducedAmount = Cloak.GetReducedAmount(source, amount);
 
                 Cloak.ShowMessage(this, source, amount, reducedAmount);
 
                 amount = reducedAmount;
-                percent = (float)amount / Health.MaxValue;
+                percent = targetVitalMax > 0 ? (float)amount / targetVitalMax : 0.0f;
             }
 
-            // update health
-            var damageTaken = (uint)-UpdateVitalDelta(Health, (int)-amount);
-            DamageHistory.Add(source, damageType, damageTaken);
+            var mbResult = new ManaBarrierResult();
+            var preAbsorbAmount = amount; // preserve original for messaging when fully absorbed
+            uint damageTaken;
+            if (damageType == DamageType.Stamina)
+                damageTaken = (uint)-UpdateVitalDelta(Stamina, (int)-amount);
+            else if (damageType == DamageType.Mana)
+                damageTaken = (uint)-UpdateVitalDelta(Mana, (int)-amount);
+            else
+            {
+                // G��G�� Mana Barrier G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��
+                mbResult = TryAbsorbWithManaBarrier(ref amount, damageType);
+                amountAbsorbed = mbResult.AmountAbsorbed;
+                // G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��
+
+                // update health (skip if fully absorbed, but don't early-return so messages still fire)
+                damageTaken = 0;
+                if (!mbResult.FullyAbsorbed)
+                {
+                    damageTaken = (uint)-UpdateVitalDelta(Health, (int)-amount);
+                    DamageHistory.Add(source, damageType, damageTaken);
+                }
+            }
 
             // update stamina
             if (CombatMode != CombatMode.NonCombat)
@@ -525,8 +636,31 @@ namespace ACE.Server.WorldObjects
             //if (Fellowship != null)
                 //Fellowship.OnVitalUpdate(this);
 
-            if (Health.Current <= 0)
+            if (!isVitalDrainDamage && Health.Current <= 0)
             {
+                // ILT: killing blow message with overkill
+                if (source is Creature killer)
+                {
+                    var overkill = amount > damageTaken ? amount - damageTaken : 0;
+                    string verb = "", plural = "";
+                    Strings.GetAttackVerb(damageType, (float)amount / Health.MaxValue, ref verb, ref plural);
+                    var partName = bodyPart switch
+                    {
+                        BodyPart.UpperArm => "upper arm",
+                        BodyPart.LowerArm => "lower arm",
+                        BodyPart.UpperLeg => "upper leg",
+                        BodyPart.LowerLeg => "lower leg",
+                        _ => bodyPart.ToString().ToLower()
+                    };
+                    var critMsg = crit ? "Critical hit! " : "";
+                    var dmgStr = Creature.FormatDamage(amount, DamageNumberFormat);
+                    var overkillSuffix = (overkill > 0 && ShowOverkill)
+                        ? $" [Overkill: {Creature.FormatDamage(overkill, DamageNumberFormat)}]"
+                        : "";
+                    // Death notifications intentionally bypass squelch — a player should always see what killed them.
+                    SendMessage($"{critMsg}{killer.Name} {plural} your {partName} for {dmgStr} points of {damageType.ToString().ToLower()} damage!{overkillSuffix}", ChatMessageType.CombatEnemy);
+                }
+
                 OnDeath(new DamageHistoryInfo(source), damageType, crit);
                 Die();
                 return (int)damageTaken;
@@ -542,15 +676,62 @@ namespace ACE.Server.WorldObjects
             // send network messages
             if (source is Creature creature)
             {
-                if (!SquelchManager.Squelches.Contains(source, ChatMessageType.CombatEnemy))
-                    Session.Network.EnqueueSend(new GameEventDefenderNotification(Session, creature.Name, damageType, percent, amount, damageLocation, crit, attackConditions));
+                if (!isVitalDrainDamage)
+                {
+                    if (mbResult.AmountAbsorbed > 0 && !SquelchManager.Squelches.Contains(source, ChatMessageType.CombatEnemy))
+                    {
+                        string verb = "", plural = "";
+                        var displayAmount = mbResult.FullyAbsorbed ? preAbsorbAmount : amount;
+                        Strings.GetAttackVerb(damageType, (float)displayAmount / Health.MaxValue, ref verb, ref plural);
 
-                var hitSound = new GameMessageSound(Guid, GetHitSound(source, bodyPart), 1.0f);
-                var splatter = new GameMessageScript(Guid, (PlayScript)Enum.Parse(typeof(PlayScript), "Splatter" + creature.GetSplatterHeight() + creature.GetSplatterDir(this)));
-                EnqueueBroadcast(hitSound, splatter);
+                        var partName = bodyPart switch
+                        {
+                            BodyPart.UpperArm => "upper arm",
+                            BodyPart.LowerArm => "lower arm",
+                            BodyPart.UpperLeg => "upper leg",
+                            BodyPart.LowerLeg => "lower leg",
+                            _ => bodyPart.ToString().ToLower()
+                        };
+
+                        var critMsg = crit ? "Critical hit! " : "";
+                        var mbSuffix = GetManaBarrierSuffix(mbResult);
+                        var dmgStr = Creature.FormatDamage(displayAmount, DamageNumberFormat);
+                        var msg = $"{critMsg}{creature.Name} {plural} your {partName} for {dmgStr} points of {damageType.ToString().ToLower()} damage!{mbSuffix}";
+                        SendMessage(msg, ChatMessageType.CombatEnemy);
+                    }
+                    else if (amount > 0)
+                    {
+                        if (!SquelchManager.Squelches.Contains(source, ChatMessageType.CombatEnemy))
+                        {
+                            if (DamageNumberFormat != 0)
+                            {
+                                string verb2 = "", plural2 = "";
+                                Strings.GetAttackVerb(damageType, percent, ref verb2, ref plural2);
+                                var critMsg2 = crit ? "Critical hit! " : "";
+                                var dmgStr2 = Creature.FormatDamage(amount, DamageNumberFormat);
+                                SendMessage($"{critMsg2}{creature.Name} {plural2} your {bodyPart.ToString().ToLower()} for {dmgStr2} points of {damageType.ToString().ToLower()} damage!", ChatMessageType.CombatEnemy);
+                            }
+                            else
+                                Session.Network.EnqueueSend(new GameEventDefenderNotification(Session, creature.Name, damageType, percent, amount, damageLocation, crit, attackConditions));
+                        }
+                    }
+                }
+                else
+                {
+                    var vitalName = GetVitalDisplayName(damageType);
+                    var defenderDrainMessage = $"{creature.Name} drains {Creature.FormatDamage(damageTaken, DamageNumberFormat)} points of your {vitalName}.";
+                    SendChatMessage(creature, defenderDrainMessage, ChatMessageType.CombatEnemy);
+                }
+
+                if (!isVitalDrainDamage)
+                {
+                    var hitSound = new GameMessageSound(Guid, GetHitSound(source, bodyPart), 1.0f);
+                    var splatter = new GameMessageScript(Guid, (PlayScript)Enum.Parse(typeof(PlayScript), "Splatter" + creature.GetSplatterHeight() + creature.GetSplatterDir(this)));
+                    EnqueueBroadcast(hitSound, splatter);
+                }
             }
 
-            if (percent >= 0.1f)
+            if (!isVitalDrainDamage && percent >= 0.1f)
             {
                 // Wound1 - Aahhh!    - elemental attacks above some threshold
                 // Wound2 - Deep Ugh! - bludgeoning attacks above some threshold
@@ -567,14 +748,29 @@ namespace ACE.Server.WorldObjects
                 EnqueueBroadcast(new GameMessageSound(Guid, woundSound, 1.0f));
             }
 
-            if (equippedCloak != null && Cloak.HasProcSpell(equippedCloak))
+            if (!isVitalDrainDamage && equippedCloak != null && Cloak.HasProcSpell(equippedCloak))
                 Cloak.TryProcSpell(this, source, equippedCloak, percent);
 
             // if player attacker, update PK timer
-            if (source is Player attacker)
-                UpdatePKTimers(attacker, this);
+            if (source is Player playerAttacker)
+                UpdatePKTimers(playerAttacker, this);
 
             return (int)damageTaken;
+        }
+
+        private static ACE.Server.WorldObjects.Entity.CreatureVital GetDefenderVitalForDamageType(Creature creature, DamageType damageType)
+        {
+            return damageType switch
+            {
+                DamageType.Stamina => creature.Stamina,
+                DamageType.Mana => creature.Mana,
+                _ => creature.Health,
+            };
+        }
+
+        private static string GetVitalDisplayName(DamageType damageType)
+        {
+            return damageType == DamageType.Mana ? "mana" : "stamina";
         }
 
         /// <summary>
@@ -948,7 +1144,7 @@ namespace ACE.Server.WorldObjects
                 return 1.0f;
 
             // http://acpedia.org/wiki/Announcements_-_11th_Anniversary_Preview#Void_Magic_and_You.21
-            // Creatures under Asheron’s protection take half damage from any nether type spell.
+            // Creatures under Asheron's protection take half damage from any nether type spell.
             if (damageType == DamageType.Nether)
                 return 0.5f;
 

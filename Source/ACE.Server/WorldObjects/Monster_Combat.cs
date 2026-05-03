@@ -742,6 +742,20 @@ namespace ACE.Server.WorldObjects
         public virtual uint TakeDamage(WorldObject source, DamageType damageType, float amount, bool crit = false)
         {
             var tryDamage = (int)Math.Round(amount);
+
+            if (damageType == DamageType.Stamina)
+            {
+                var staminaDamage = -UpdateVitalDelta(Stamina, -tryDamage);
+                return (uint)Math.Max(0, staminaDamage);
+            }
+
+            if (damageType == DamageType.Mana)
+            {
+                var manaDamage = -UpdateVitalDelta(Mana, -tryDamage);
+                return (uint)Math.Max(0, manaDamage);
+            }
+
+            var preHitHealth = (long)Math.Max(0, Health.Current);
             var damage = -UpdateVitalDelta(Health, -tryDamage);
 
             // TODO: update monster stamina?
@@ -775,7 +789,12 @@ namespace ACE.Server.WorldObjects
 
             if (Health.Current <= 0)
             {
-                OnDeath(DamageHistory.LastDamager, damageType, crit);
+                // ILT: record overkill amount on the last damager for the kill notification
+                var lastDamager = DamageHistory.LastDamager;
+                if (lastDamager != null && source != null)
+                    lastDamager.OverkillAmount = tryDamage > preHitHealth ? (uint)(tryDamage - preHitHealth) : 0;
+
+                OnDeath(lastDamager, damageType, crit);
 
                 Die();
             }
